@@ -1,0 +1,23 @@
+{
+  "$schema": "../exact/scripts/app.schema.json",
+  "name": "Ledger",
+  "short_name": "Ledger",
+  "id": "com.example.tide-feaf97",
+  "start_url": "/",
+  "display": "standalone",
+  "app": {
+    "id": "com.example.tide-feaf97",
+    "name": "Ledger"
+  },
+  "host": {
+    "web": {},
+    "linux": {},
+    "android": {}
+  },
+  "deploy": {
+    "store": {
+      "web": "0",
+      "linux": "0"
+    }
+  }
+}

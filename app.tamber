@@ -1,0 +1,15 @@
+tamber ledger
+
+theme
+  AccentColor = light-dark(#0b7a55, #1f8f68)
+  brand.fill = light-dark(#0b6b4b, #134e3a)
+  ink.on-brand = #ffffff  scheme=fixed
+  ink.on-brand-muted = #cdeee0  scheme=fixed
+  cat.c1 = light-dark(#2563eb, #60a5fa)
+  cat.c2 = light-dark(#d97706, #fbbf24)
+  cat.c3 = light-dark(#7c3aed, #a78bfa)
+  cat.c4 = light-dark(#db2777, #f472b6)
+  cat.c5 = light-dark(#0891b2, #22d3ee)
+  cat.c6 = light-dark(#65a30d, #a3e635)
+  cat.c7 = light-dark(#ea580c, #fb923c)
+  cat.c8 = light-dark(#475569, #94a3b8)
