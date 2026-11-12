@@ -1,0 +1,672 @@
+// Ledger: a household budget. Three tabs, each its own stack: Spend (the month's spending by
+// day, a sheet to add, a detail that edits and deletes), Budgets (each category against its limit) and
+// People (who paid, who owes whom, settle up). Money is whole cents; the data module adds,
+// groups and splits; the view shows. Everything is kept in one file (app:/data/ledger.json).
+use RowText, Badge, EmptyState from "exact:content"
+
+routes nav
+  tab spend "/"
+    txn "/txn/:id"
+    editTxn "/txn/:id/edit"
+    addTxn "/add"
+  tab budgets "/budgets"
+    category "/category/:id"
+    editCategory "/category/:id/edit"
+    addCategory "/new-category"
+  tab people "/people"
+    addMember "/new-member"
+
+shape Time
+  epochAtZero: number
+  utcOffset: number
+
+shape Media
+  prefersReducedMotion: bool
+
+shape Txn
+  id: string
+  amount: number
+  categoryId: string
+  categoryName: string
+  paidBy: string
+  payerName: string
+  note: string
+  day: string
+  at: number
+  hue: string
+
+shape Day
+  day: string
+  at: number
+  total: number
+
+shape Cat
+  id: string
+  name: string
+  limit: number
+  spent: number
+  hue: string
+
+shape Bar
+  key: string
+  label: string
+  total: number
+  fraction: number
+  current: bool
+
+shape Month
+  key: string
+  label: string
+  prev: string
+  next: string
+  current: bool
+  trend: Bar[]
+  spent: number
+  budget: number
+  days: Day[]
+  txns: Txn[]
+  categories: Cat[]
+
+shape Member
+  id: string
+  name: string
+  paid: number
+  balance: number
+
+shape Transfer
+  id: string
+  from: string
+  fromName: string
+  to: string
+  toName: string
+  amount: number
+
+shape People
+  members: Member[]
+  transfers: Transfer[]
+
+shape Reply
+  ok: bool
+  error: string
+
+fn money(cents: number): string = formatNumber(cents / 100, "currency", "USD")
+fn cents(s: string): number = match parseNumber(s) { case some(n) => round(n * 100), case none => 0 }
+fn txnTitle(t: Txn): string = t.note == "" ? t.categoryName : t.note
+fn txnDetail(t: Txn): string = t.note == "" ? t.payerName : `${t.categoryName} · ${t.payerName}`
+fn txnOf(all: Txn[], id: string): string = match first(all.filter(t => t.id == id)) { case some(t) => txnTitle(t), case none => "" }
+fn catOf(cats: Cat[], id: string): string = match first(cats.filter(c => c.id == id)) { case some(c) => c.name, case none => "" }
+fn firstCat(cats: Cat[]): string = match first(cats) { case some(c) => c.id, case none => "" }
+fn firstMember(ms: Member[]): string = match first(ms) { case some(m) => m.id, case none => "" }
+fn leftText(spent: number, budget: number): string = spent > budget ? `${money(spent - budget)} over budget` : `${money(budget - spent)} left of ${money(budget)}`
+fn balanceText(b: number): string = b > 0 ? `gets back ${money(b)}` : b < 0 ? `owes ${money(-b)}` : "settled up"
+fn replyError(r: option<Reply>): string = match r { case some(x) => x.error, case none => "" }
+fn share(spent: number, limit: number): number = limit > 0 ? min(1, spent / limit) : 0
+fn initial(name: string): string = name.trim().slice(0, 1).toUpperCase()
+fn trendText(bars: Bar[]): string = bars.map(b => `${b.label} ${money(b.total)}`).join(", ")
+
+// Motion: rows rise in, staggered; a deleted row falls away; a status pops. Each is gated on
+// reduced motion where it is used (`still`).
+keyframes rise
+  from opacity=0 translate="0px 10px"
+keyframes leave
+  to opacity=0 translate="-24px 0px" animation-timing-function="ease-in"
+keyframes pop
+  from opacity=0 scale=0.6
+
+component App
+  resource time = exactTime() as shape Time
+  resource media = exactViewport() as shape Media
+  derive still = media.prefersReducedMotion
+  state now = 0
+  state aimed = ""
+  state txnRefusal = ""
+  state catRefusal = ""
+  state memberRefusal = ""
+  state editRefusal = ""
+  state catEditRefusal = ""
+  derive today = formatDate(time.epochAtZero + now, time.utcOffset, "iso")
+  // The month is the Spend tab's location (`/?m=2026-10`): Back, a reload and a shared link keep it.
+  // None, or one past this month, is this month; the data module names the month it means.
+  derive monthKey = match first(nav.tabs.filter(t => t.name == "spend")) { case some(t) => match first(t.stack) { case some(e) => searchParam(e, "m"), case none => "" }, case none => "" }
+  resource month = loadMonth(today, monthKey) as shape Month else empty()
+  resource all = loadTxns() as shape Txn[] else empty()
+  resource people = loadPeople() as shape People else empty()
+  mutation added as shape Reply queue refreshes month, all, people then afterAddTxn
+  mutation removed as shape Reply queue refreshes month, all, people
+  mutation edited as shape Reply queue refreshes month, all, people then afterEditTxn
+  mutation catEdited as shape Reply queue refreshes month, all then afterEditCat
+  mutation catAdded as shape Reply queue refreshes month then afterAddCat
+  mutation memberAdded as shape Reply queue refreshes people then afterAddMember
+  mutation settled as shape Reply queue refreshes people
+  derive selectedTxn = match stack(nav).filter(e => e.name == "txn").at(-1) { case some(e) => e.params.id, case none => "" }
+  task tick mount
+    every(60000, step)
+  action step
+    now = performanceNow()
+  action reload
+    refresh month
+    refresh all
+    refresh people
+  action pick(name: string)
+    nav = select(nav, name)
+  action follow(url: string)
+    nav = go(nav, url)
+  action back
+    nav = back(nav)
+  // A month is the location's, so `replace`: it writes the query without adding a Back step.
+  action prevMonth
+    nav = replace(nav, path("spend") + `?m=${month.prev}`)
+  action nextMonth
+    if not month.current
+      nav = replace(nav, month.next == "" ? path("spend") : path("spend") + `?m=${month.next}`)
+  action openAddTxn
+    txnRefusal = ""
+    nav = push(nav, "/add")
+  action openAddCat
+    catRefusal = ""
+    nav = push(nav, "/new-category")
+  action openAddMember
+    memberRefusal = ""
+    nav = push(nav, "/new-member")
+  // The day is read at the write, not from `today`, which can be a minute behind.
+  action saveTxn(amount: number, categoryId: string, paidBy: string, note: string)
+    let at = time.epochAtZero + performanceNow()
+    now = performanceNow()
+    send added = addTxn(amount, categoryId, paidBy, note, formatDate(at, time.utcOffset, "iso"), at)
+  action afterAddTxn
+    let r = replyError(added)
+    txnRefusal = r
+    if r == "" and top(nav).name == "addTxn"
+      nav = back(nav)
+  action openEditTxn(id: string)
+    editRefusal = ""
+    nav = push(nav, path("editTxn", id))
+  action saveEditTxn(id: string, amount: number, categoryId: string, paidBy: string, note: string)
+    send edited = updateTxn(id, amount, categoryId, paidBy, note)
+  action afterEditTxn
+    let r = replyError(edited)
+    editRefusal = r
+    if r == "" and top(nav).name == "editTxn"
+      nav = back(nav)
+  action openEditCat(id: string)
+    catEditRefusal = ""
+    nav = push(nav, path("editCategory", id))
+  action saveEditCat(id: string, name: string, limit: number)
+    send catEdited = updateCategory(id, name, limit)
+  action afterEditCat
+    let r = replyError(catEdited)
+    catEditRefusal = r
+    if r == "" and top(nav).name == "editCategory"
+      nav = back(nav)
+  action saveCat(name: string, limit: number)
+    send catAdded = addCategory(name, limit)
+  action afterAddCat
+    let r = replyError(catAdded)
+    catRefusal = r
+    if r == "" and top(nav).name == "addCategory"
+      nav = back(nav)
+  action saveMember(name: string)
+    send memberAdded = addMember(name)
+  action afterAddMember
+    let r = replyError(memberAdded)
+    memberRefusal = r
+    if r == "" and top(nav).name == "addMember"
+      nav = back(nav)
+  action settle(t: Transfer)
+    let at = time.epochAtZero + performanceNow()
+    send settled = addSettlement(t.from, t.to, t.amount, formatDate(at, time.utcOffset, "iso"), at)
+  // The detail's Delete asks first; a row's swipe deletes at once, as iOS's lists do.
+  action askRemove(id: string)
+    aimed = id
+    showModal("remove-txn")
+  action remove(id: string)
+    send removed = removeTxn(id)
+    if selectedTxn == id
+      nav = back(nav)
+
+  view
+    main navigationKey=`${top(nav).id}` navigationBack="back" navigate=follow testId="app" width="100%" height="100%"
+      display="flex" flex-direction="column"
+      column flex=1 min-height=0 position="relative"
+        for t in nav.tabs key=t.name
+          column role="tabpanel" id=`panel-${t.name}` position="absolute" inset=0
+            for e in t.stack key=e.id
+              if e.name == "spend"
+                column navigationKey=`${e.id}` navigationScroll="spend-list" position="absolute" inset=0
+                  display="flex" flex-direction="column"
+                  header display="flex" flex-wrap="wrap" align-items="center" gap=8 padding="8px 16px"
+                    text "Spend" role="heading" aria-level=1 flex=1
+                    button press=openAddTxn aria-label="Add Expense" testId="add-txn"
+                      image "symbol:add"
+                  SpendList(month=month, time=time, now=now, still=still, failed=failed(month), loading=pending(month),
+                    prev=prevMonth, next=nextMonth, add=openAddTxn, retry=reload, remove=remove)
+              if e.name == "txn"
+                column navigationKey=`${e.id}` navigationScroll="txn-detail" position="absolute" inset=0
+                  display="flex" flex-direction="column"
+                  header display="flex" flex-wrap="wrap" align-items="center" gap=8 padding="8px 16px"
+                    text (txnOf(all, e.params.id) != "" or pending(all) ? txnOf(all, e.params.id) : "Not Found")
+                      role="heading" aria-level=2 flex=1 testId="txn-title"
+                    if txnOf(all, e.params.id) != ""
+                      button press=openEditTxn(e.params.id) testId="edit-txn"
+                        text "Edit"
+                  if all.filter(x => x.id == e.params.id).length > 0 or pending(all)
+                    list id="txn-detail" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+                      for x in all.filter(x => x.id == e.params.id) key=x.id
+                        TxnSections(txn=x, time=time, now=now, still=still, askRemove=askRemove(x.id))
+                  else
+                    EmptyState(symbol="symbol:alert", title="No such expense", message="It may have been deleted.")
+                      button press=back buttonStyle="filled" testId="missing-back"
+                        text "Back to Spend"
+              if e.name == "addTxn"
+                TxnForm(route=e.id, heading="New Expense", categories=month.categories, members=people.members,
+                  amount="", category=firstCat(month.categories), payer=firstMember(people.members), note="",
+                  refusal=txnRefusal, busy=pending(added), save=saveTxn, cancel=back)
+              if e.name == "editTxn"
+                for x in all.filter(x => x.id == e.params.id) key=x.id
+                  TxnForm(route=e.id, heading="Edit Expense", categories=month.categories, members=people.members,
+                    amount=formatDecimal(x.amount, 2), category=x.categoryId, payer=x.paidBy, note=x.note,
+                    refusal=editRefusal, busy=pending(edited), save=saveEditTxn(x.id), cancel=back)
+              if e.name == "budgets"
+                column navigationKey=`${e.id}` navigationScroll="budgets-list" position="absolute" inset=0
+                  display="flex" flex-direction="column"
+                  header display="flex" flex-wrap="wrap" align-items="center" gap=8 padding="8px 16px"
+                    text "Budgets" role="heading" aria-level=1 flex=1
+                    button press=openAddCat aria-label="Add Category" testId="add-cat"
+                      image "symbol:add"
+                  if failed(month)
+                    EmptyState(symbol="symbol:alert", title="Can’t Load Budgets", message="Something went wrong reading them.")
+                      button press=reload testId="budgets-retry"
+                        text "Try Again"
+                  else if month.categories.length == 0 and not pending(month)
+                    EmptyState(symbol="symbol:chart", title="No Categories", message="Add a category with a monthly limit.")
+                      button press=openAddCat testId="empty-add-cat"
+                        text "Add Category"
+                  else
+                    list id="budgets-list" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+                      section
+                        header
+                          text month.label testId="budgets-month"
+                        for c in month.categories key=c.id
+                          link href=path("category", c.id) testId=`cat-${c.id}`
+                            column flex=1 min-width=0 padding-top=10 padding-bottom=10
+                              CategoryBar(cat=c, label=c.name, still=still)
+                            image "symbol:forward-chevron"
+              if e.name == "category"
+                column navigationKey=`${e.id}` navigationScroll="cat-detail" position="absolute" inset=0
+                  display="flex" flex-direction="column"
+                  header display="flex" flex-wrap="wrap" align-items="center" gap=8 padding="8px 16px"
+                    text (catOf(month.categories, e.params.id) != "" or pending(month) ? catOf(month.categories, e.params.id) : "Not Found")
+                      role="heading" aria-level=2 flex=1 testId="cat-title"
+                    if catOf(month.categories, e.params.id) != ""
+                      button press=openEditCat(e.params.id) testId="edit-cat"
+                        text "Edit"
+                  list id="cat-detail" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+                    for c in month.categories.filter(x => x.id == e.params.id) key=c.id
+                      section
+                        row padding-top=10 padding-bottom=10
+                          CategoryBar(cat=c, label=month.label, still=still)
+                        footer
+                          text leftText(c.spent, c.limit) testId="cat-left"
+                      section
+                        header
+                          text "Expenses"
+                        if month.txns.filter(x => x.categoryId == c.id).length == 0
+                          row
+                            text "Nothing spent here this month." color="-exact-secondary-label" testId="cat-empty"
+                        for x in month.txns.filter(x => x.categoryId == c.id) key=x.id
+                          RowText(title=txnTitle(x), detail=`${x.payerName} · ${formatDay(x.at, time.epochAtZero + now, time.utcOffset, "day")}`,
+                            value=some(money(x.amount)))
+              if e.name == "addCategory"
+                CategoryForm(route=e.id, heading="New Category", name="", limit="",
+                  refusal=catRefusal, busy=pending(catAdded), save=saveCat, cancel=back)
+              if e.name == "editCategory"
+                for c in month.categories.filter(x => x.id == e.params.id) key=c.id
+                  CategoryForm(route=e.id, heading="Edit Category", name=c.name, limit=formatDecimal(c.limit, 2),
+                    refusal=catEditRefusal, busy=pending(catEdited), save=saveEditCat(c.id), cancel=back)
+              if e.name == "people"
+                column navigationKey=`${e.id}` navigationScroll="people-list" position="absolute" inset=0
+                  display="flex" flex-direction="column"
+                  header display="flex" flex-wrap="wrap" align-items="center" gap=8 padding="8px 16px"
+                    text "People" role="heading" aria-level=1 flex=1
+                    button press=openAddMember aria-label="Add Person" testId="add-member"
+                      image "symbol:add"
+                  if failed(people)
+                    EmptyState(symbol="symbol:alert", title="Can’t Load People", message="Something went wrong reading them.")
+                      button press=reload testId="people-retry"
+                        text "Try Again"
+                  else
+                    list id="people-list" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+                      section
+                        header
+                          text "Household"
+                        for m, i in people.members key=m.id
+                          row gap=12 align-items="center" animation=(still ? "none" : `rise 260ms ${min(i, 8) * 40}ms both`)
+                            column width="2.25rem" height="2.25rem" border-radius="1.125rem" background-color="brand.fill" flex-shrink=0
+                              align-items="center" justify-content="center" aria-hidden=true
+                              text initial(m.name) color="ink.on-brand" font="-exact-headline"
+                            RowText(title=m.name, detail=`paid ${money(m.paid)}`, value=some(balanceText(m.balance)))
+                        footer
+                          text "Each expense is split equally between everyone."
+                      section
+                        header
+                          text "Settle Up"
+                        if people.transfers.length == 0
+                          row
+                            text "Everyone is even." color="-exact-secondary-label" testId="all-even"
+                        for x in people.transfers key=x.id
+                          row gap=8 align-items="center" testId=`transfer-${x.id}`
+                            -exact-exit-animation=(still ? "none" : "leave 220ms ease-in both")
+                            RowText(title=`${x.fromName} pays ${x.toName}`, detail="", value=some(money(x.amount)))
+                            button press=settle(x) buttonStyle="bordered" disabled=pending(settled) testId=`settle-${x.id}`
+                              text "Settle"
+              if e.name == "addMember"
+                AddMember(route=e.id, refusal=memberRefusal, busy=pending(memberAdded), save=saveMember, cancel=back)
+      row role="tablist" testId="tabs"
+        button role="tab" aria-controls="panel-spend" aria-selected=(nav.tab == "spend") press=pick("spend")
+          testId="tab-spend" flex=1
+          image "symbol:cart"
+          text "Spend"
+        button role="tab" aria-controls="panel-budgets" aria-selected=(nav.tab == "budgets") press=pick("budgets")
+          testId="tab-budgets" flex=1
+          image "symbol:chart"
+          text "Budgets"
+        button role="tab" aria-controls="panel-people" aria-selected=(nav.tab == "people") press=pick("people")
+          testId="tab-people" flex=1
+          image "symbol:people"
+          text "People"
+      dialog id="remove-txn" role="alertdialog" aria-label="Delete Expense?"
+        text "This can’t be undone."
+        button press=remove(aimed) destructive=true commandfor="remove-txn" command="close" testId="remove-confirm"
+          text "Delete"
+        button commandfor="remove-txn" command="close" testId="remove-cancel"
+          text "Cancel"
+
+// The month: a switcher, the total against the budget, then each day's expenses, newest first.
+component SpendList
+  props
+    month: Month
+    time: Time
+    now: number
+    still: bool
+    failed: bool
+    loading: bool
+    prev: action
+    next: action
+    add: action
+    retry: action
+    remove: action
+  view
+    if failed
+      EmptyState(symbol="symbol:alert", title="Can’t Load Spending", message="Something went wrong reading it.")
+        button press=retry testId="retry"
+          text "Try Again"
+    else
+      list id="spend-list" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+        section
+          row align-items="center" gap=8
+            button press=prev aria-label="Previous Month" testId="prev-month"
+              image "symbol:back"
+            text month.label flex=1 min-width=0 text-align="center" testId="month-label"
+            button press=next aria-label="Next Month" disabled=month.current testId="next-month"
+              image "symbol:forward-chevron"
+        section background-color="transparent"
+          row padding-top=4 padding-bottom=4 padding-left=0 padding-right=0
+            Hero(month=month, still=still)
+        if month.txns.length == 0 and not loading
+          section
+            row padding-top=10 padding-bottom=10
+              column flex=1 min-width=0 gap=8 align-items="center"
+                text "Nothing spent this month." testId="spend-empty"
+                button press=add testId="empty-add"
+                  text "Add Expense"
+        for d in month.days key=d.day
+          section
+            header
+              text `${formatDay(d.at, time.epochAtZero + now, time.utcOffset, "day")} · ${money(d.total)}`
+            for x, i in month.txns.filter(t => t.day == d.day) key=x.id
+              link href=path("txn", x.id) delete=remove(x.id) testId=`txn-${x.id}`
+                animation=(still ? "none" : `rise 260ms ${min(i, 8) * 40}ms both`)
+                -exact-exit-animation=(still ? "none" : "leave 220ms ease-in both")
+                -exact-layout-transition=(still ? "none" : "260ms ease")
+                view width=10 height=10 border-radius=5 background-color=x.hue flex-shrink=0 margin-right=12 aria-hidden=true
+                RowText(title=txnTitle(x), detail=txnDetail(x), value=some(money(x.amount)))
+                image "symbol:forward-chevron"
+
+// One expense: its amount, what it was, who paid, the day, and Delete, which asks first.
+component TxnSections
+  props
+    txn: Txn
+    time: Time
+    now: number
+    still: bool
+    askRemove: action
+  view
+    section background-color="transparent"
+      row padding-top=4 padding-bottom=4 padding-left=0 padding-right=0
+        column flex=1 min-width=0 gap=6 padding=20 border-radius=20 background-color="-exact-secondary-background"
+          animation=(still ? "none" : "rise 280ms ease-out both")
+          row align-items="center" gap=8 min-width=0
+            view width=10 height=10 border-radius=5 background-color=txn.hue flex-shrink=0 aria-hidden=true
+            text txn.categoryName font="-exact-subheadline" color="-exact-secondary-label" flex=1 min-width=0
+          text money(txn.amount) font-size="2.5rem" font-weight=700 font-variant-numeric="tabular-nums"
+            white-space="nowrap" -exact-fit="shrink" min-width=0 testId="txn-amount-shown"
+          text `Paid by ${txn.payerName} · ${formatDay(txn.at, time.epochAtZero + now, time.utcOffset, "day")}`
+            font="-exact-subheadline" color="-exact-secondary-label"
+    section
+      row
+        text "Category"
+        text txn.categoryName color="-exact-secondary-label" testId="txn-category"
+      row
+        text "Paid by"
+        text txn.payerName color="-exact-secondary-label" testId="txn-payer"
+      row
+        text "Day"
+        text formatDay(txn.at, time.epochAtZero + now, time.utcOffset, "day") color="-exact-secondary-label"
+      if txn.note != ""
+        row
+          text "Note"
+          text txn.note color="-exact-secondary-label" flex=1 min-width=0 text-align="end" testId="txn-note"
+    section
+      button press=askRemove destructive=true testId="delete-txn"
+        text "Delete Expense"
+
+// An expense's sheet, new or edited: amount, category, who paid, a note. Its fields start from
+// the props when its route shows it; Save waits for an amount, saying so.
+component TxnForm
+  props
+    route: number
+    heading: string
+    categories: Cat[]
+    members: Member[]
+    amount: string
+    category: string
+    payer: string
+    note: string
+    refusal: string
+    busy: bool
+    save: action
+    cancel: action
+  state amountText = amount
+  state categoryId = category
+  state paidBy = payer
+  state noteText = note
+  derive amountCents = cents(amountText)
+  derive hint = busy ? "Saving…" : amountCents <= 0 ? "Enter an amount, like 12.50." : ""
+  action editAmount(v: string)
+    amountText = v
+  action setCategory(v: string)
+    categoryId = v
+  action setPayer(v: string)
+    paidBy = v
+  action editNote(v: string)
+    noteText = v
+  action submit
+    if amountCents > 0 and not busy
+      save(amountCents, categoryId, paidBy, noteText.trim())
+  view
+    column navigationKey=`${route}` navigationPresentation="modal" navigationScroll="add-txn-form" position="absolute" inset=0
+      display="flex" flex-direction="column"
+      header display="flex" align-items="center" justify-content="space-between" padding="8px 16px"
+        button id="back" press=cancel aria-label="Cancel" testId="txn-cancel"
+          image "symbol:close"
+        text heading role="heading"
+        button press=submit buttonStyle="bordered-prominent" aria-label="Save" disabled=(hint != "") testId="txn-save"
+          image "symbol:checkmark"
+      list id="add-txn-form" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+        section
+          row
+            column flex=1 min-width=0 gap=4
+              input value=amountText input=editAmount submit=submit inputmode="decimal" placeholder="Amount, like 12.50"
+                aria-label="Amount" aria-invalid=(refusal != "") autofocus=true testId="txn-amount"
+              if refusal != ""
+                text refusal font="-exact-footnote" color="-exact-system-red" testId="txn-error"
+          footer
+            text hint testId="txn-hint"
+        section
+          row
+            text "Category"
+            select value=categoryId change=setCategory aria-label="Category" testId="txn-category-pick"
+              for c in categories key=c.id
+                option c.name value=c.id
+          row
+            text "Paid by"
+            select value=paidBy change=setPayer aria-label="Paid by" testId="txn-payer-pick"
+              for m in members key=m.id
+                option m.name value=m.id
+          row
+            input value=noteText input=editNote placeholder="Note (optional)" aria-label="Note" testId="txn-note-input"
+              flex=1 min-width=0
+
+// A category's sheet, new or edited: its name and monthly limit.
+component CategoryForm
+  props
+    route: number
+    heading: string
+    name: string
+    limit: string
+    refusal: string
+    busy: bool
+    save: action
+    cancel: action
+  state nameText = name
+  state limitText = limit
+  derive limitCents = cents(limitText)
+  derive hint = busy ? "Saving…" : nameText.trim() == "" ? "Enter a name." : limitCents <= 0 ? "Enter a monthly limit, like 300." : ""
+  action editName(v: string)
+    nameText = v
+  action editLimit(v: string)
+    limitText = v
+  action submit
+    if hint == ""
+      save(nameText.trim(), limitCents)
+  view
+    column navigationKey=`${route}` navigationPresentation="modal" navigationScroll="add-cat-form" position="absolute" inset=0
+      display="flex" flex-direction="column"
+      header display="flex" align-items="center" justify-content="space-between" padding="8px 16px"
+        button id="back" press=cancel aria-label="Cancel" testId="cat-cancel"
+          image "symbol:close"
+        text heading role="heading"
+        button press=submit buttonStyle="bordered-prominent" aria-label="Save" disabled=(hint != "") testId="cat-save"
+          image "symbol:checkmark"
+      list id="add-cat-form" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+        section
+          row
+            column flex=1 min-width=0 gap=4
+              input value=nameText input=editName placeholder="Name" aria-label="Name" autofocus=true
+                aria-invalid=(refusal != "") testId="cat-name"
+              if refusal != ""
+                text refusal font="-exact-footnote" color="-exact-system-red" testId="cat-error"
+          row
+            input value=limitText input=editLimit submit=submit inputmode="decimal" placeholder="Monthly limit, like 300"
+              aria-label="Monthly limit" testId="cat-limit" flex=1 min-width=0
+          footer
+            text hint testId="cat-hint"
+
+// A new person in the household.
+component AddMember
+  props
+    route: number
+    refusal: string
+    busy: bool
+    save: action
+    cancel: action
+  state name = ""
+  derive hint = busy ? "Saving…" : name.trim() == "" ? "Enter a name." : ""
+  action editName(v: string)
+    name = v
+  action submit
+    if hint == ""
+      save(name.trim())
+  view
+    column navigationKey=`${route}` navigationPresentation="modal" navigationScroll="add-member-form" position="absolute" inset=0
+      display="flex" flex-direction="column"
+      header display="flex" align-items="center" justify-content="space-between" padding="8px 16px"
+        button id="back" press=cancel aria-label="Cancel" testId="member-cancel"
+          image "symbol:close"
+        text "New Person" role="heading"
+        button press=submit buttonStyle="bordered-prominent" aria-label="Save" disabled=(hint != "") testId="member-save"
+          image "symbol:checkmark"
+      list id="add-member-form" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+        section
+          row
+            column flex=1 min-width=0 gap=4
+              input value=name input=editName submit=submit placeholder="Name" aria-label="Name" autofocus=true
+                aria-invalid=(refusal != "") testId="member-name"
+              if refusal != ""
+                text refusal font="-exact-footnote" color="-exact-system-red" testId="member-error"
+          footer
+            text hint testId="member-hint"
+
+// The month's hero: what was spent on the brand's fill, how much is left, a bar that fills
+// toward the budget, and the six months up to this one as bars, this one solid.
+component Hero
+  props
+    month: Month
+    still: bool
+  derive f = share(month.spent, month.budget)
+  derive over = month.spent > month.budget
+  view
+    column background-color="brand.fill" color="ink.on-brand" border-radius=20 padding=20 gap=12 min-width=0
+      flex=1 testId="hero" animation=(still ? "none" : "rise 320ms ease-out both")
+      row align-items="center" gap=6 min-width=0
+        image "symbol:cart" color="ink.on-brand-muted" font="-exact-subheadline" aria-hidden=true
+        text `Spent in ${month.label}` font="-exact-subheadline" color="ink.on-brand-muted" flex=1 min-width=0
+      text money(month.spent) font-size="2.75rem" font-weight=700 font-variant-numeric="tabular-nums"
+        white-space="nowrap" -exact-fit="shrink" min-width=0 testId="hero-spent"
+      text leftText(month.spent, month.budget) font="-exact-subheadline" color="ink.on-brand-muted"
+        font-variant-numeric="tabular-nums" testId="hero-left"
+      column height=8 border-radius=4 overflow="hidden" position="relative" role="meter" aria-label="Spent of budget"
+        aria-valuenow=`${f}` aria-valuemin="0" aria-valuemax="1" aria-valuetext=leftText(month.spent, month.budget)
+        view position="absolute" inset=0 background-color="ink.on-brand" opacity=0.25
+        view position="absolute" top=0 bottom=0 left=0 border-radius=4 background-color=(over ? "-exact-system-orange" : "ink.on-brand")
+          width=`${f * 100}%` -exact-layout-transition=(still ? "none" : "420ms ease")
+      row align-items="flex-end" gap=8 height=76 margin-top=6 role="img" aria-label=`Last six months: ${trendText(month.trend)}`
+        for b in month.trend key=b.key
+          column flex=1 min-width=0 height="100%" align-items="center" justify-content="flex-end" gap=4 aria-hidden=true
+            view width="70%" max-width=28 height=(round(b.fraction * 50) + 3) border-radius=4 background-color="ink.on-brand"
+              opacity=(b.current ? 1 : 0.4) transition=(still ? "none" : "height 450ms ease, opacity 200ms ease")
+            text b.label font-size="min(-exact-caption2, 16px)" color="ink.on-brand-muted" white-space="nowrap"
+
+// A category against its limit: its colour, its name, spent of limit, and a bar in its colour
+// (red once over) that grows to its share; past the limit a badge pops in.
+component CategoryBar
+  props
+    cat: Cat
+    label: string
+    still: bool
+  derive f = share(cat.spent, cat.limit)
+  derive over = cat.spent > cat.limit
+  derive value = `${money(cat.spent)} of ${money(cat.limit)}`
+  view
+    column gap=8 min-width=0 flex=1 role="meter" aria-label=label aria-valuetext=value
+      aria-valuenow=`${f}` aria-valuemin="0" aria-valuemax="1"
+      row flex-wrap="wrap" align-items="center" column-gap=8 row-gap=4 min-width=0
+        view width=10 height=10 border-radius=5 background-color=cat.hue flex-shrink=0 aria-hidden=true
+        text label flex-grow=1 min-width=0
+        if over
+          row animation=(still ? "none" : "pop 260ms ease-out both")
+            Badge(label="Over budget", tint=some("-exact-system-orange"))
+        text value color="-exact-secondary-label" font-variant-numeric="tabular-nums" min-width=0
+      column height=8 border-radius=4 overflow="hidden" position="relative" background-color="-exact-tertiary-fill"
+        view position="absolute" top=0 bottom=0 left=0 border-radius=4 background-color=(over ? "-exact-system-red" : cat.hue)
+          width=`${f * 100}%` -exact-layout-transition=(still ? "none" : "420ms ease")
