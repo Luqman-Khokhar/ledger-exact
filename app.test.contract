@@ -1,0 +1,226 @@
+// Each test starts from empty storage: one person (You, id 1) and four categories
+// (Groceries 1, Eating Out 2, Transport 3, Bills 4: $1,400.00 a month in all).
+
+test "an empty month says what to do; Save waits for an amount"
+  expect tree has "spend-empty"
+  tap "empty-add"
+  clock settle
+  expect disabled "txn-save"
+  expect text "txn-hint" == "Enter an amount, like 12.50."
+  type "txn-amount" "12.5.0"
+  expect disabled "txn-save"
+  type "txn-amount" "12.50"
+  expect enabled "txn-save"
+  expect text "txn-hint" == ""
+
+test "an expense is kept with its day, counted in its category, across a relaunch"
+  epoch "2026-11-12T18:00:00Z"
+  time-zone "America/Los_Angeles"
+  tap "add-txn"
+  clock settle
+  type "txn-amount" "31"
+  type "txn-category-pick" "2"
+  type "txn-note-input" "Noodle Bar"
+  tap "txn-save"
+  clock data
+  clock settle
+  expect state month.spent == 3100
+  expect state month.txns.0 .day == "2026-11-12"
+  expect state month.categories.1 .spent == 3100
+  expect text "month-label" == "November 2026"
+  reload
+  expect state month.txns.0 .note == "Noodle Bar"
+  expect tree has "txn-1"
+
+test "an expense opens its detail, which survives a reload, and deletes after asking"
+  tap "add-txn"
+  clock settle
+  type "txn-amount" "9.99"
+  tap "txn-save"
+  clock data
+  clock settle
+  tap "txn-1"
+  clock settle
+  expect text "txn-title" == "Groceries"
+  expect text "txn-payer" == "You"
+  reload
+  clock data
+  expect text "txn-title" == "Groceries"
+  tap "delete-txn"
+  tap "remove-confirm"
+  clock data
+  clock settle
+  expect state month.txns == []
+  expect tree has "spend-empty"
+  reload
+  expect state all == []
+
+test "a past month is its own and kept in the location, and the next month waits at this one"
+  epoch "2026-11-12T18:00:00Z"
+  time-zone "America/Los_Angeles"
+  tap "add-txn"
+  clock settle
+  type "txn-amount" "5"
+  tap "txn-save"
+  clock data
+  clock settle
+  expect disabled "next-month"
+  tap "prev-month"
+  clock data
+  expect state monthKey == "2026-10"
+  expect text "month-label" == "October 2026"
+  expect state month.spent == 0
+  expect tree has "spend-empty"
+  reload
+  clock data
+  expect text "month-label" == "October 2026"
+  tap "next-month"
+  clock data
+  expect state monthKey == ""
+  expect state month.spent == 500
+
+test "a category is added, a repeat refused, and going over its limit says so"
+  tap "tab-budgets"
+  tap "add-cat"
+  clock settle
+  type "cat-name" "groceries"
+  type "cat-limit" "100"
+  tap "cat-save"
+  clock data
+  expect text "cat-error" == "There’s already a category called Groceries."
+  type "cat-name" "Coffee"
+  type "cat-limit" "10"
+  tap "cat-save"
+  clock data
+  clock settle
+  expect tree has "cat-5"
+  tap "tab-spend"
+  tap "add-txn"
+  clock settle
+  type "txn-amount" "12.50"
+  type "txn-category-pick" "5"
+  tap "txn-save"
+  clock data
+  clock settle
+  tap "tab-budgets"
+  tap "cat-5"
+  clock settle
+  expect text "cat-title" == "Coffee"
+  expect text "cat-left" == "$2.50 over budget"
+
+test "an expense splits between everyone, and settling up evens it"
+  tap "tab-people"
+  tap "add-member"
+  clock settle
+  type "member-name" "you"
+  tap "member-save"
+  clock data
+  expect text "member-error" == "You is already in the household."
+  type "member-name" "Sam"
+  tap "member-save"
+  clock data
+  clock settle
+  expect state people.members.1 .name == "Sam"
+  expect tree has "all-even"
+  tap "tab-spend"
+  tap "add-txn"
+  clock settle
+  type "txn-amount" "30"
+  tap "txn-save"
+  clock data
+  clock settle
+  tap "tab-people"
+  expect state people.members.0 .balance == 1500
+  expect state people.members.1 .balance == -1500
+  expect state people.transfers.0 .fromName == "Sam"
+  expect state people.transfers.0 .amount == 1500
+  tap "settle-2-1"
+  clock data
+  expect tree has "all-even"
+  reload
+  expect state people.members.1 .balance == 0
+
+test "an odd cent goes to someone, so shares add up"
+  tap "tab-people"
+  tap "add-member"
+  clock settle
+  type "member-name" "Sam"
+  tap "member-save"
+  clock data
+  clock settle
+  tap "add-member"
+  clock settle
+  type "member-name" "Ali"
+  tap "member-save"
+  clock data
+  clock settle
+  tap "tab-spend"
+  tap "add-txn"
+  clock settle
+  type "txn-amount" "10"
+  type "txn-payer-pick" "2"
+  tap "txn-save"
+  clock data
+  clock settle
+  expect state people.members.0 .balance == -334
+  expect state people.members.1 .balance == 667
+  expect state people.members.2 .balance == -333
+
+test "an expense is edited from its detail: amount, category, payer and note"
+  tap "tab-people"
+  tap "add-member"
+  clock settle
+  type "member-name" "Sam"
+  tap "member-save"
+  clock data
+  clock settle
+  tap "tab-spend"
+  tap "add-txn"
+  clock settle
+  type "txn-amount" "20"
+  tap "txn-save"
+  clock data
+  clock settle
+  tap "txn-1"
+  clock settle
+  tap "edit-txn"
+  clock settle
+  expect text "txn-amount" == "20.00"
+  type "txn-amount" "0"
+  expect disabled "txn-save"
+  type "txn-amount" "42.10"
+  type "txn-category-pick" "3"
+  type "txn-payer-pick" "2"
+  type "txn-note-input" "Taxi"
+  tap "txn-save"
+  clock data
+  clock settle
+  expect text "txn-title" == "Taxi"
+  expect text "txn-category" == "Transport"
+  expect text "txn-payer" == "Sam"
+  expect state month.spent == 4210
+  expect state month.categories.2 .spent == 4210
+  expect state people.members.1 .balance == 2105
+  reload
+  clock data
+  expect text "txn-title" == "Taxi"
+
+test "a category's limit and name are edited, a clash with another refused"
+  tap "tab-budgets"
+  tap "cat-1"
+  clock settle
+  tap "edit-cat"
+  clock settle
+  expect text "cat-limit" == "450.00"
+  type "cat-name" "bills"
+  tap "cat-save"
+  clock data
+  expect text "cat-error" == "There’s already a category called Bills."
+  type "cat-name" "Food"
+  type "cat-limit" "500"
+  tap "cat-save"
+  clock data
+  clock settle
+  expect text "cat-title" == "Food"
+  expect text "cat-left" == "$500.00 left of $500.00"
+  expect state month.budget == 145000
