@@ -65,6 +65,27 @@ bun run build              # writes the static site to dist/
 bun run start              # serves dist/ locally, the way a static host would
 ```
 
+### Linux
+
+On Linux, Ledger is a native desktop app rather than a browser tab. Exact compiles the same `app.contract` and `app.ts` into a native Rust binary, with no Electron and no bundled browser. It follows light or dark mode, has the list and detail side by side with tabs along the bottom, and comes with a `.desktop` entry so it can sit in your app menu.
+
+<div align="center">
+<img src="docs/screenshots/linux-spend-light.png" width="800" alt="Ledger as a native Linux app: November spending list with the Electricity expense open beside it" />
+<br /><br />
+<img src="docs/screenshots/linux-spend-dark.png" width="400" alt="Ledger on Linux in dark mode" />
+<img src="docs/screenshots/linux-people-light.png" width="400" alt="Ledger on Linux: household balances and settle-up suggestions" />
+</div>
+
+To build and run it:
+
+```sh
+bun exact.mjs linux                    # compiles the app and prints the binary's path
+./target/host-dev/tide-linux           # launches Ledger
+bun exact.mjs test linux               # runs the same UI tests against the native build
+```
+
+Run `bun ../exact/scripts/exact.mjs setup --check` first if this is your first native build. It lists any toolchain pieces that are missing.
+
 ## Getting started
 
 Ledger uses an [Exact](https://github.com/expo/exact) checkout next to it, at `../exact`. You can point `EXACT2` somewhere else instead.
@@ -79,10 +100,9 @@ bun exact.mjs test         # run app.test.contract
 bun exact.mjs verify       # build, test, and check every screen in light and dark
 ```
 
-To build the native apps:
+To build the Android app:
 
 ```sh
-bun exact.mjs linux
 bun exact.mjs android      # builds the APK and installs it on a connected device
 ```
 
