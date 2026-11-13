@@ -1,6 +1,6 @@
 <div align="center">
 
-# Tide
+# Ledger
 
 **A shared expense and budget tracker for households, built with the [Exact](https://github.com/expo/exact) framework.**
 
@@ -9,6 +9,7 @@ Track what you spend, keep each category under its monthly limit, and settle up 
 ![Built with Exact](https://img.shields.io/badge/built%20with-Exact-0b7a55)
 ![Platforms](https://img.shields.io/badge/platforms-web%20%7C%20linux%20%7C%20android-134e3a)
 ![Runtime](https://img.shields.io/badge/runtime-Bun-f9f1e1?logo=bun&logoColor=black)
+![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 
 <img src="docs/screenshots/spend-light.png" width="250" alt="Spend screen: November total, budget bar and today's expenses" />
 <img src="docs/screenshots/budgets-light.png" width="250" alt="Budgets screen: spending per category against its monthly limit" />
@@ -22,7 +23,7 @@ Track what you spend, keep each category under its monthly limit, and settle up 
 
 **Budgets.** Every category has a monthly limit with a colour-coded progress bar, and the app warns you when one goes over. You can add, rename or re-limit categories at any time, and a duplicate name is refused.
 
-**People.** Add the people in your household and every expense is split equally between them, with odd cents going to someone so the shares always add up. Tide works out the fewest payments that even everyone out, and one tap settles each one.
+**People.** Add the people in your household and every expense is split equally between them, with odd cents going to someone so the shares always add up. Ledger works out the fewest payments that even everyone out, and one tap settles each one.
 
 **Everywhere.** It runs as a web app, a Linux desktop app and an Android app from one codebase, follows the system's light or dark mode, and keeps your data on your device across relaunches.
 
@@ -38,12 +39,12 @@ Track what you spend, keep each category under its monthly limit, and settle up 
 
 ## Getting started
 
-Tide uses an [Exact](https://github.com/expo/exact) checkout next to it, at `../exact`. You can point `EXACT2` somewhere else instead.
+Ledger uses an [Exact](https://github.com/expo/exact) checkout next to it, at `../exact`. You can point `EXACT2` somewhere else instead.
 
 ```sh
 git clone https://github.com/expo/exact.git
-git clone https://github.com/Luqman-Khokhar/tide-exact.git
-cd tide-exact
+git clone https://github.com/Luqman-Khokhar/ledger-exact.git
+cd ledger-exact
 
 bun exact.mjs web          # dev server, reloads on save
 bun exact.mjs test         # run app.test.contract
@@ -84,4 +85,8 @@ Issues and pull requests are welcome. Before you open a PR, make sure `bun exact
 
 ## Acknowledgements
 
-Built on [Exact](https://github.com/expo/exact). If Tide helped you learn the framework, a ⭐ helps other people find it.
+Built on [Exact](https://github.com/expo/exact). If Ledger helped you learn the framework, a ⭐ helps other people find it.
+
+## License
+
+[MIT](LICENSE) © 2026 Muhammad Luqman
