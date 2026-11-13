@@ -37,6 +37,34 @@ Track what you spend, keep each category under its monthly limit, and settle up 
 </div>
 </details>
 
+## Platforms
+
+### Web
+
+The same app runs in any modern browser and adapts its layout to the width of the window. On a phone it has a bottom tab bar and full-screen pages, as in the screenshots above. On a desktop it becomes a three-pane layout: a sidebar for Spend, Budgets and People, the list in the middle, and the selected expense or category open beside it, so you can go through a month without switching back and forth.
+
+<div align="center">
+<img src="docs/screenshots/web-spend-light.png" width="800" alt="Ledger on desktop web: sidebar, November spending list, and the Electricity expense open in the detail pane" />
+<br /><br />
+<img src="docs/screenshots/web-budgets-light.png" width="400" alt="Ledger on desktop web: Bills category open with its limit bar and expenses" />
+<img src="docs/screenshots/web-people-light.png" width="400" alt="Ledger on desktop web: household balances and suggested settlements" />
+</div>
+
+<details>
+<summary><b>Desktop dark mode</b></summary>
+<br />
+<div align="center">
+<img src="docs/screenshots/web-spend-dark.png" width="800" alt="Ledger on desktop web in dark mode" />
+</div>
+</details>
+
+The web build is a static site with no server and no database, so you can host it anywhere that serves files, like GitHub Pages, Netlify, Vercel or Cloudflare Pages:
+
+```sh
+bun run build              # writes the static site to dist/
+bun run start              # serves dist/ locally, the way a static host would
+```
+
 ## Getting started
 
 Ledger uses an [Exact](https://github.com/expo/exact) checkout next to it, at `../exact`. You can point `EXACT2` somewhere else instead.
@@ -49,13 +77,6 @@ cd ledger-exact
 bun exact.mjs web          # dev server, reloads on save
 bun exact.mjs test         # run app.test.contract
 bun exact.mjs verify       # build, test, and check every screen in light and dark
-```
-
-To make a production build for the web:
-
-```sh
-bun run build              # writes dist/
-bun run start              # serves dist/ the way a static host would
 ```
 
 To build the native apps:
